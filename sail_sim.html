@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Sail Trim Simulator v6 — Recalculated Physics & Clean Presets</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #0f172a; font-family: system-ui, sans-serif; }
+    #info {
+      position: absolute; top: 12px; left: 12px; color: #f8fafc;
+      background: rgba(15, 23, 42, 0.9); padding: 14px 18px; border-radius: 10px;
+      font-size: 13px; pointer-events: none; line-height: 1.6;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4); backdrop-filter: blur(8px);
+    }
+    .legend { display: flex; gap: 12px; margin-top: 6px; font-weight: 600; font-size: 12px; }
+    .legend span { display: flex; align-items: center; gap: 4px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+</head>
+<body>
+
+<div id="info">
+  <b>⛵ 3D Тренажер тримминга паруса v6</b><br>
+  Нос лодки: <b>+Z (Вперед)</b> | Корма: <b>-Z</b>
+  <div class="legend">
+    <span><i class="dot" style="background:#38bdf8"></i> Ветер</span>
+    <span><i class="dot" style="background:#22c55e"></i> Тяга (Вперед)</span>
+    <span><i class="dot" style="background:#ef4444"></i> Дрейф / Крен</span>
+  </div>
+</div>
+
+<script>
+const DEG2RAD = Math.PI / 180;
+
+// --- 1. Сцена и Камера ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f172a);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(6, 6, 8);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2, 0);
+controls.update();
+
+// Освещение
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+dirLight.position.set(8, 15, 10);
+scene.add(dirLight);
+
+scene.add(new THREE.GridHelper(16, 32, 0x334155, 0x1e293b));
+
+// --- 2. Корпус лодки (Нос +Z, Правый борт +X) ---
+const boatGroup = new THREE.Group();
+
+const boatShape = new THREE.Shape();
+boatShape.moveTo(0, 2.5);                   // Нос (+Z)
+boatShape.quadraticCurveTo(0.8, 0.5, 0.7, -2.0); // Правый борт (+X)
+boatShape.lineTo(-0.7, -2.0);               // Транец (-Z)
+boatShape.quadraticCurveTo(-0.8, 0.5, 0, 2.5);  // Левый борт (-X)
+
+const boatGeo = new THREE.ExtrudeGeometry(boatShape, { depth: 0.5, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.05, bevelThickness: 0.05 });
+boatGeo.rotateX(Math.PI / 2);
+
+const boatMesh = new THREE.Mesh(boatGeo, new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 }));
+boatGroup.add(boatMesh);
+
+// Мачта и Гик
+const mastZ = 0.8;
+const mastHeight = 4.3;
+const mastGeo = new THREE.CylinderGeometry(0.04, 0.05, mastHeight);
+const mast = new THREE.Mesh(mastGeo, new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8 }));
+mast.position.set(0, mastHeight / 2, mastZ);
+boatGroup.add(mast);
+
+const footLength = 2.0;
+const boomGeo = new THREE.CylinderGeometry(0.03, 0.03, footLength);
+boomGeo.rotateX(Math.PI / 2);
+boomGeo.translate(0, 0, -footLength / 2); // Вдоль оси -Z от мачты
+
+const boom = new THREE.Mesh(boomGeo, new THREE.MeshStandardMaterial({ color: 0x64748b }));
+boom.position.set(0, 0.25, mastZ);
+boatGroup.add(boom);
+
+// Трос топенанда
+const toppingLiftGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, mastHeight, mastZ),
+  new THREE.Vector3(0, 0.25, mastZ - footLength)
+]);
+const toppingLiftLine = new THREE.Line(toppingLiftGeo, new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 }));
+boatGroup.add(toppingLiftLine);
+
+scene.add(boatGroup);
+
+// --- 3. Парус ---
+const sailHeight = 3.9;
+const headLength = 0.08;
+const gridX = 20;
+const gridY = 32;
+
+const sailGeo = new THREE.PlaneGeometry(1, 1, gridX, gridY);
+sailGeo.translate(0.5, 0.5, 0);
+
+const sailMat = new THREE.MeshStandardMaterial({
+  color: 0xf8fafc,
+  side: THREE.DoubleSide,
+  roughness: 0.3,
+  wireframe: false
+});
+const sailMesh = new THREE.Mesh(sailGeo, sailMat);
+sailMesh.position.set(0, 0.25, mastZ);
+scene.add(sailMesh);
+
+const posAttr = sailGeo.attributes.position;
+let basePositions = null;
+let time = 0;
+
+// --- 4. Векторы сил ---
+const createArrow = (color) => new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,2,mastZ), 1, color, 0.25, 0.12);
+const windArrow = createArrow(0x38bdf8);
+const thrustArrow = createArrow(0x22c55e);
+const heelArrow = createArrow(0xef4444);
+scene.add(windArrow, thrustArrow, heelArrow);
+
+// --- 5. Параметры модели ---
+const params = {
+  preset: 'Острый бейдевинд (30°)',
+  tack: 'Правый галс (Starboard)', 
+  windAngle: 30,                    
+  windSpeed: 12,                    
+  sheetTrim: 12,                    
+  
+  toppingLift: 0,                   
+  luffTension: 80,                  
+  footTension: 80,                  
+  leechTension: 80,                 
+  
+  baseDraft: 0.14,
+  wireframe: false
+};
+
+// --- 6. Точный перерасчет физики ---
+function updateSimulation() {
+  const isStarboard = params.tack.includes('Правый');
+  
+  // МАТЕМАТИЧЕСКАЯ КОРРЕКЦИЯ ГАЛСА:
+  // tackSign = +1 для Правого галса (ветер дует Справа +X -> парус уходит Влево -X)
+  // tackSign = -1 для Левого галса (ветер дует Слева -X -> парус уходит Вправо +X)
+  const tackSign = isStarboard ? 1 : -1;
+
+  // 1. Направление ветра (откуда дует)
+  const windRad = params.windAngle * DEG2RAD;
+  const windFromX = tackSign * Math.sin(windRad); // +X если ветер справа, -X если слева
+  const windFromZ = Math.cos(windRad);            // +Z с носа, -Z с кормы
+  
+  // Вектор направления движения воздуха (КУДА дует)
+  const windVec = new THREE.Vector3(-windFromX, 0, -windFromZ).normalize();
+
+  // 2. Настройки оснастки
+  const draftPosition = THREE.MathUtils.lerp(0.50, 0.28, params.luffTension / 100);
+  const maxTwist = THREE.MathUtils.lerp(35, 5, params.leechTension / 100);
+  const footFlatten = params.footTension / 100;
+  const boomLiftAngle = (params.toppingLift / 100) * 20 * DEG2RAD;
+
+  // Угол атаки alpha
+  const alpha = params.windAngle - params.sheetTrim;
+  const isLuffing = alpha < 3 || params.windAngle < 8;
+
+  // 3. Формирование 3D-сеточки паруса
+  if (basePositions) {
+    for (let i = 0; i < posAttr.count; i++) {
+      const u = basePositions[i * 3];     
+      const v = basePositions[i * 3 + 1]; 
+
+      const currentChord = THREE.MathUtils.lerp(footLength, headLength, v);
+      const z0 = -u * currentChord;
+      
+      const boomLiftY = (-z0) * Math.tan(boomLiftAngle) * (1 - v);
+      const y0 = v * sailHeight + boomLiftY;
+
+      let localDraft = params.baseDraft * (1 - footFlatten * (1 - v) * 0.5);
+      let camber = 0;
+      if (u > 0 && u < 1) {
+        camber = 4 * localDraft * (u / draftPosition) * (1 - u / (2 - 2 * draftPosition));
+      }
+
+      if (isLuffing) {
+        camber *= 0.15;
+        camber += Math.sin(time * 22 + v * 10 + u * 12) * 0.04 * u;
+      }
+
+      // Выпуклость выгибается в подветренную сторону (-tackSign)
+      let x0 = -tackSign * camber;
+
+      const twistRad = -tackSign * (maxTwist * v) * DEG2RAD;
+      
+      const newX = x0 * Math.cos(twistRad) + z0 * Math.sin(twistRad);
+      const newZ = -x0 * Math.sin(twistRad) + z0 * Math.cos(twistRad);
+
+      posAttr.setXYZ(i, newX, y0, newZ);
+    }
+    posAttr.needsUpdate = true;
+    sailGeo.computeVertexNormals();
+  }
+
+  // 4. Поворот гика
+  // Положительный угол вращения Three.js вокруг Y от оси -Z смещает гик в сторону -X (Port / Левый борт)
+  const boomAngle = tackSign * params.sheetTrim * DEG2RAD;
+  
+  sailMesh.rotation.y = boomAngle;
+  boom.rotation.y = boomAngle;
+  boom.rotation.x = boomLiftAngle;
+
+  // Топенанд
+  const mastTopPos = new THREE.Vector3(0, mastHeight, mastZ);
+  const boomEndLocal = new THREE.Vector3(0, 0, -footLength);
+  boomEndLocal.applyAxisAngle(new THREE.Vector3(1, 0, 0), boomLiftAngle);
+  boomEndLocal.applyAxisAngle(new THREE.Vector3(0, 1, 0), boomAngle);
+  const boomEndWorld = new THREE.Vector3(0, 0.25, mastZ).add(boomEndLocal);
+
+  toppingLiftLine.geometry.setFromPoints([mastTopPos, boomEndWorld]);
+
+  // 5. Аэродинамика и силы
+  let Cl = 0;
+  let Cd = 0.05;
+
+  if (!isLuffing) {
+    const radAlpha = alpha * DEG2RAD;
+    if (alpha <= 25) {
+      Cl = 1.4 * Math.sin(2 * radAlpha);
+      Cd = 0.05 + 0.3 * Math.pow(Math.sin(radAlpha), 2);
+    } else {
+      Cl = 0.8 * Math.sin(radAlpha);
+      Cd = 0.2 + 0.8 * Math.pow(Math.sin(radAlpha), 2);
+    }
+  }
+
+  // Вектор подъемной силы Lift (перпендикулярен ветру, тянет подветренно и вперед)
+  const liftVec = new THREE.Vector3(-tackSign * Math.cos(windRad), 0, Math.sin(windRad)).normalize();
+
+  const dynPressure = 0.5 * 1.225 * Math.pow(params.windSpeed * 0.514, 2);
+
+  const totalAeroForce = new THREE.Vector3()
+    .addScaledVector(liftVec, Cl)
+    .addScaledVector(windVec, Cd)
+    .multiplyScalar(dynPressure * 0.025);
+
+  const thrustValue = totalAeroForce.z;
+  const heelValue = totalAeroForce.x;
+
+  // 6. Отрисовка векторов
+  const centerPos = new THREE.Vector3(0, 2, mastZ);
+
+  // Ветер
+  windArrow.position.copy(centerPos).sub(windVec.clone().multiplyScalar(2.5));
+  windArrow.setDirection(windVec);
+  windArrow.setLength(params.windSpeed * 0.12, 0.2, 0.1);
+
+  // Тяга (зеленый вектор) — ВПЕРЕД (+Z)
+  thrustArrow.position.copy(centerPos);
+  thrustArrow.setDirection(new THREE.Vector3(0, 0, 1));
+  thrustArrow.setLength(Math.max(0.001, thrustValue), 0.2, 0.1);
+
+  // Дрейф / Крен (красный вектор) — ВБОК (в подветренную сторону)
+  heelArrow.position.copy(centerPos);
+  heelArrow.setDirection(new THREE.Vector3(Math.sign(heelValue) || 1, 0, 0));
+  heelArrow.setLength(Math.max(0.001, Math.abs(heelValue)), 0.2, 0.1);
+}
+
+// Запоминаем базовые координаты
+setTimeout(() => {
+  basePositions = sailGeo.attributes.position.array.slice();
+  updateSimulation();
+}, 50);
+
+// --- 7. Единые Пресеты Курсов ---
+const presets = {
+  'Острый бейдевинд (30°)':   { windAngle: 30,  sheetTrim: 12, toppingLift: 0,  luffTension: 90, footTension: 85, leechTension: 85 },
+  'Полный бейдевинд (50°)':   { windAngle: 50,  sheetTrim: 22, toppingLift: 0,  luffTension: 75, footTension: 70, leechTension: 70 },
+  'Галфвинд (90°)':          { windAngle: 90,  sheetTrim: 45, toppingLift: 5,  luffTension: 50, footTension: 45, leechTension: 50 },
+  'Бакштаг (135°)':          { windAngle: 135, sheetTrim: 68, toppingLift: 15, luffTension: 30, footTension: 30, leechTension: 30 },
+  'Фордевинд (180°)':        { windAngle: 180, sheetTrim: 85, toppingLift: 25, luffTension: 20, footTension: 20, leechTension: 15 },
+  'Левентик (0°)':            { windAngle: 0,   sheetTrim: 0,  toppingLift: 30, luffTension: 50, footTension: 50, leechTension: 20 }
+};
+
+function applyPreset(name) {
+  const p = presets[name];
+  if (!p) return;
+  Object.assign(params, p);
+  params.preset = name;
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  updateSimulation();
+}
+
+// --- 8. GUI Меню ---
+const gui = new lil.GUI({ title: 'Настройки Симулятора' });
+
+gui.add(params, 'preset', Object.keys(presets)).name('Курс относительно ветра').onChange(applyPreset);
+
+const tackFolder = gui.addFolder('Ветер и Галс');
+tackFolder.add(params, 'tack', ['Правый галс (Starboard)', 'Левый галс (Port)']).name('Галс').onChange(updateSimulation);
+tackFolder.add(params, 'windAngle', 0, 180, 1).name('Угол ветра (°)').onChange(updateSimulation);
+tackFolder.add(params, 'windSpeed', 0, 30, 1).name('Скорость (узлы)').onChange(updateSimulation);
+
+const sheetFolder = gui.addFolder('Тримминг (Шкот)');
+sheetFolder.add(params, 'sheetTrim', 0, 90, 1).name('Угол гика (°)').onChange(updateSimulation);
+
+const tensionFolder = gui.addFolder('Шкатории и Оснастка');
+tensionFolder.add(params, 'toppingLift', 0, 100, 1).name('Топенанд (Подъем гика)').onChange(updateSimulation);
+tensionFolder.add(params, 'luffTension', 0, 100, 1).name('Передняя (Канингем)').onChange(updateSimulation);
+tensionFolder.add(params, 'footTension', 0, 100, 1).name('Нижняя (Outhaul)').onChange(updateSimulation);
+tensionFolder.add(params, 'leechTension', 0, 100, 1).name('Задняя (Оттяжка гика)').onChange(updateSimulation);
+
+gui.add(params, 'wireframe').name('Сетка 3D').onChange((v) => { sailMat.wireframe = v; });
+
+// --- 9. Игровой цикл ---
+function animate() {
+  requestAnimationFrame(animate);
+  time += 0.015;
+
+  if (params.windAngle < 15 || (params.windAngle - params.sheetTrim) < 3) {
+    updateSimulation(); // Пересчет полоскания ткани
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
